@@ -54,10 +54,11 @@ logs/
 mlruns/
 mlartifacts/
 
-# DVC
-/data/raw/*
+# DVC - Allow .dvc files but ignore data content
+/data/raw/dataset.csv
 /data/processed/*
 !.gitkeep
+!*.dvc
 
 # Docker
 .dockerignore
@@ -74,8 +75,7 @@ test-results/
 # Jupyter
 .ipynb_checkpoints/
 
-# Data
-*.csv
+# Data (ignore large data files but allow .dvc files)
 *.parquet
 *.json
 !**/structure.json

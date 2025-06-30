@@ -36,12 +36,22 @@ try:
     from supabase import create_client, Client
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_ANON_KEY")
-    supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
+    
+    if supabase_url and supabase_key and supabase_url != "your_supabase_url_here":
+        supabase: Client = create_client(supabase_url, supabase_key)
+        logger.info("Supabase client initialized")
+    else:
+        supabase = None
+        logger.info("Supabase not configured, continuing without database logging")
+        
 except ImportError:
     logger.warning("Supabase client not available")
     supabase = None
+except Exception as e:
+    logger.warning(f"Supabase initialization failed: {e}")
+    supabase = None
 
-# Simple dummy model class
+# Simple dummy model class for fallback
 class DummyModel:
     def __init__(self):
         self.coefficients = np.array([2.0, 1.5, 0.5, 0.8])
@@ -54,8 +64,8 @@ class DummyModel:
         return np.dot(X, self.coefficients) + self.intercept
 
 # Global model variable
-model = DummyModel()
-model_version = "dummy-v1.0"
+model = None
+model_version = "unknown"
 
 class PredictionRequest(BaseModel):
     features: List[float]
@@ -73,33 +83,52 @@ class HealthResponse(BaseModel):
     timestamp: str
 
 def load_model():
-    """Load or create the model"""
+    """Load the latest model from MLflow or fallback to local/dummy model"""
     global model, model_version
     try:
-        # Try to load MLflow model if available
+        # Try to load MLflow model first
         try:
             import mlflow
             import mlflow.sklearn
             
-            mlflow_uri = os.getenv("MLFLOW_TRACKING_URI")
-            if mlflow_uri:
-                mlflow.set_tracking_uri(mlflow_uri)
+            mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+            mlflow.set_tracking_uri(mlflow_uri)
+            
+            client = mlflow.MlflowClient()
+            model_name = os.getenv("MODEL_NAME", "ml-production-model")
+            
+            try:
+                # Try to get latest production model
+                latest_version = client.get_latest_versions(model_name, stages=["Production"])
+                if not latest_version:
+                    # If no production model, get latest version
+                    latest_version = client.get_latest_versions(model_name)
                 
-                client = mlflow.MlflowClient()
-                model_name = os.getenv("MODEL_NAME", "ml-production-model")
-                
-                try:
-                    latest_version = client.get_latest_versions(model_name, stages=["Production"])[0]
-                    model_uri = f"models:/{model_name}/{latest_version.version}"
+                if latest_version:
+                    version = latest_version[0]
+                    model_uri = f"models:/{model_name}/{version.version}"
                     model = mlflow.sklearn.load_model(model_uri)
-                    model_version = latest_version.version
-                    logger.info(f"Loaded MLflow model: {model_name} version {latest_version.version}")
-                    return latest_version.version
-                except Exception as e:
-                    logger.warning(f"Could not load MLflow model: {e}")
+                    model_version = f"mlflow-v{version.version}"
+                    logger.info(f"Loaded MLflow model: {model_name} version {version.version}")
+                    return model_version
                     
+            except Exception as e:
+                logger.warning(f"Could not load MLflow model: {e}")
+                
         except ImportError:
-            logger.info("MLflow not available, using dummy model")
+            logger.info("MLflow not available")
+            
+        # Try to load local saved model
+        try:
+            import joblib
+            local_model_path = "ml/models/model.pkl"
+            if os.path.exists(local_model_path):
+                model = joblib.load(local_model_path)
+                model_version = "local-v1.0"
+                logger.info("Loaded local saved model")
+                return model_version
+        except Exception as e:
+            logger.warning(f"Could not load local model: {e}")
             
         # Fallback to dummy model
         model = DummyModel()
@@ -141,7 +170,15 @@ async def predict(request: PredictionRequest):
         prediction = model.predict(features_array)[0]
         
         # Calculate confidence (simplified)
-        confidence = min(0.95, max(0.5, 0.8 + np.random.random() * 0.15))
+        # For RandomForest, we could use prediction variance from trees
+        # For now, using a simple heuristic
+        if hasattr(model, 'estimators_'):
+            # Real scikit-learn model
+            predictions = np.array([tree.predict(features_array)[0] for tree in model.estimators_])
+            confidence = max(0.5, min(0.99, 1 - (np.std(predictions) / (np.abs(np.mean(predictions)) + 0.01))))
+        else:
+            # Dummy model
+            confidence = min(0.95, max(0.5, 0.8 + np.random.random() * 0.15))
         
         # Log prediction to Supabase if available
         if supabase and request.user_id:
@@ -175,6 +212,7 @@ async def get_model_info():
         "model_loaded": model is not None,
         "model_version": model_version,
         "model_type": type(model).__name__ if model else None,
+        "model_features": 4,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -195,6 +233,22 @@ async def get_prediction_history(user_id: str = None, limit: int = 100):
     
     except Exception as e:
         logger.error(f"Error fetching prediction history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/model/reload")
+async def reload_model():
+    """Reload the model (useful for updating to latest version)"""
+    try:
+        old_version = model_version
+        new_version = load_model()
+        return {
+            "status": "success",
+            "old_version": old_version,
+            "new_version": new_version,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error reloading model: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
