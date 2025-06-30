@@ -1,0 +1,218 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, dev, staging]
+  pull_request:
+    branches: [dev]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: bardakor/ml-production-app
+
+jobs:
+  # Test jobs
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install pytest-cov
+          
+      - name: Run unit tests
+        run: |
+          cd backend
+          pytest ../tests/unit/ -v --cov=. --cov-report=xml
+          
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./backend/coverage.xml
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+          
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+          
+      - name: Run lint
+        run: |
+          cd frontend
+          npm run lint
+          
+      - name: Run build
+        run: |
+          cd frontend
+          npm run build
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Start services
+        run: |
+          docker-compose up -d backend mlflow
+          sleep 30
+          
+      - name: Run integration tests
+        run: |
+          pip install pytest requests
+          pytest tests/integration/ -v
+          
+      - name: Stop services
+        run: docker-compose down
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Install Playwright
+        run: |
+          cd frontend
+          npm ci
+          npx playwright install --with-deps
+          
+      - name: Start full stack
+        run: |
+          docker-compose up -d
+          sleep 60
+          
+      - name: Run E2E tests
+        run: |
+          cd frontend
+          npx playwright test
+          
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          
+      - name: Stop services
+        run: docker-compose down
+
+  # Build and deploy jobs
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend, integration-tests]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/staging'
+    environment: staging
+    
+    steps:
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment"
+          # Add your staging deployment commands here
+          # Example: kubectl apply -f k8s/staging/
+          
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, e2e-tests]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          
+      - name: Deploy to Google Cloud Run
+        run: |
+          # Deploy backend
+          gcloud run deploy ml-backend \
+            --image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }} \
+            --platform=managed \
+            --region=us-central1 \
+            --allow-unauthenticated \
+            --set-env-vars="MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }}" \
+            --set-env-vars="SUPABASE_URL=${{ secrets.SUPABASE_URL }}" \
+            --set-env-vars="SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}"
+            
+          # Deploy frontend
+          gcloud run deploy ml-frontend \
+            --image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }} \
+            --platform=managed \
+            --region=us-central1 \
+            --allow-unauthenticated \
+            --set-env-vars="NEXT_PUBLIC_BACKEND_URL=https://ml-backend-url" \
+            --set-env-vars="NEXT_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" \
+            --set-env-vars="NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" 

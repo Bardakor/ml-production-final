@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://localhost:5000}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - mlflow
+    networks:
+      - ml-network
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+      - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - ml-network
+
+  mlflow:
+    image: python:3.11-slim
+    ports:
+      - "5000:5000"
+    command: >
+      bash -c "
+        pip install mlflow psycopg2-binary &&
+        mlflow server --host 0.0.0.0 --port 5000 --default-artifact-root ./mlruns
+      "
+    volumes:
+      - mlflow_data:/mlruns
+    networks:
+      - ml-network
+
+  # Optional: Local PostgreSQL for MLflow (if not using DagsHub)
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ml-network
+    profiles:
+      - local-db
+
+volumes:
+  mlflow_data:
+  postgres_data:
+
+networks:
+  ml-network:
+    driver: bridge 
