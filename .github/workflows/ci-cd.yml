@@ -46,6 +46,7 @@ jobs:
         cd backend
         python -m pytest ../tests/unit/ -v
       env:
+        CI: true
         MLFLOW_TRACKING_URI: http://localhost:5000
         SUPABASE_URL: test_url_placeholder
         SUPABASE_ANON_KEY: test_key_placeholder
@@ -58,6 +59,7 @@ jobs:
         # Wait for server to be ready
         timeout 30 bash -c 'until curl -f http://localhost:8000/ 2>/dev/null; do sleep 1; done'
       env:
+        CI: true
         MLFLOW_TRACKING_URI: http://localhost:5000
         SUPABASE_URL: test_url_placeholder
         SUPABASE_ANON_KEY: test_key_placeholder
@@ -67,6 +69,7 @@ jobs:
         cd backend
         python -m pytest ../tests/integration/ -v
       env:
+        CI: true
         MLFLOW_TRACKING_URI: http://localhost:5000
         SUPABASE_URL: test_url_placeholder
         SUPABASE_ANON_KEY: test_key_placeholder

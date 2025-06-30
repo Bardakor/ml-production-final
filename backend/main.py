@@ -86,37 +86,51 @@ def load_model():
     """Load the latest model from MLflow or fallback to local/dummy model"""
     global model, model_version
     try:
-        # Try to load MLflow model first
-        try:
-            import mlflow
-            import mlflow.sklearn
-            
-            mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-            mlflow.set_tracking_uri(mlflow_uri)
-            
-            client = mlflow.MlflowClient()
-            model_name = os.getenv("MODEL_NAME", "ml-production-model")
-            
+        # Skip MLflow in CI/test environments for faster startup
+        if os.getenv("CI") or os.getenv("TESTING"):
+            logger.info("CI/Testing environment detected, skipping MLflow connection")
+        else:
+            # Try to load MLflow model first
             try:
-                # Try to get latest production model
-                latest_version = client.get_latest_versions(model_name, stages=["Production"])
-                if not latest_version:
-                    # If no production model, get latest version
-                    latest_version = client.get_latest_versions(model_name)
+                import mlflow
+                import mlflow.sklearn
                 
-                if latest_version:
-                    version = latest_version[0]
-                    model_uri = f"models:/{model_name}/{version.version}"
-                    model = mlflow.sklearn.load_model(model_uri)
-                    model_version = f"mlflow-v{version.version}"
-                    logger.info(f"Loaded MLflow model: {model_name} version {version.version}")
-                    return model_version
+                mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+                mlflow.set_tracking_uri(mlflow_uri)
+                
+                # Quick connection test with short timeout
+                import requests
+                try:
+                    response = requests.get(f"{mlflow_uri}/health", timeout=2)
+                    if response.status_code != 200:
+                        raise Exception("MLflow server not healthy")
+                except Exception:
+                    logger.warning("MLflow server not available, skipping")
+                    raise Exception("MLflow connection failed")
+                
+                client = mlflow.MlflowClient()
+                model_name = os.getenv("MODEL_NAME", "ml-production-model")
+                
+                try:
+                    # Try to get latest production model
+                    latest_version = client.get_latest_versions(model_name, stages=["Production"])
+                    if not latest_version:
+                        # If no production model, get latest version
+                        latest_version = client.get_latest_versions(model_name)
                     
-            except Exception as e:
-                logger.warning(f"Could not load MLflow model: {e}")
-                
-        except ImportError:
-            logger.info("MLflow not available")
+                    if latest_version:
+                        version = latest_version[0]
+                        model_uri = f"models:/{model_name}/{version.version}"
+                        model = mlflow.sklearn.load_model(model_uri)
+                        model_version = f"mlflow-v{version.version}"
+                        logger.info(f"Loaded MLflow model: {model_name} version {version.version}")
+                        return model_version
+                        
+                except Exception as e:
+                    logger.warning(f"Could not load MLflow model: {e}")
+                    
+            except ImportError:
+                logger.info("MLflow not available")
             
         # Try to load local saved model
         try:

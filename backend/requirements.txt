@@ -5,4 +5,5 @@ numpy
 pandas
 python-dotenv
 pytest
-httpx 
+httpx
+requests 
