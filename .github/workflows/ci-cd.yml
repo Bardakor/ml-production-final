@@ -29,7 +29,7 @@ jobs:
       run: |
         cd backend
         pip install -r requirements.txt
-        pip install pytest pytest-asyncio httpx mlflow
+        pip install pytest-asyncio mlflow requests
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
@@ -50,6 +50,18 @@ jobs:
         SUPABASE_URL: test_url_placeholder
         SUPABASE_ANON_KEY: test_key_placeholder
 
+    - name: Start backend server for integration tests
+      run: |
+        cd backend
+        uvicorn main:app --host 0.0.0.0 --port 8000 &
+        echo $! > server.pid
+        # Wait for server to be ready
+        timeout 30 bash -c 'until curl -f http://localhost:8000/ 2>/dev/null; do sleep 1; done'
+      env:
+        MLFLOW_TRACKING_URI: http://localhost:5000
+        SUPABASE_URL: test_url_placeholder
+        SUPABASE_ANON_KEY: test_key_placeholder
+
     - name: Run integration tests
       run: |
         cd backend
@@ -58,6 +70,14 @@ jobs:
         MLFLOW_TRACKING_URI: http://localhost:5000
         SUPABASE_URL: test_url_placeholder
         SUPABASE_ANON_KEY: test_key_placeholder
+
+    - name: Stop backend server
+      run: |
+        cd backend
+        if [ -f server.pid ]; then
+          kill $(cat server.pid) || true
+          rm server.pid
+        fi
 
     - name: Build frontend
       run: |
