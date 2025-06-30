@@ -175,3 +175,5 @@ This project is for educational purposes as part of a DevOps final project.
 **Built with ❤️ for DevOps learning**
 
 For questions or issues, please check the GitHub issues or create a new one. 
+
+3 unt test, 1 integration test, 1 e2e test
