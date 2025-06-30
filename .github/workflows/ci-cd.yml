@@ -150,8 +150,10 @@ jobs:
     - name: Output image names
       id: image
       run: |
-        echo "backend-image=${{ steps.backend-meta.outputs.tags }}" >> $GITHUB_OUTPUT
-        echo "frontend-image=${{ steps.frontend-meta.outputs.tags }}" >> $GITHUB_OUTPUT
+        BACKEND_TAG=$(echo "${{ steps.backend-meta.outputs.tags }}" | head -n1)
+        FRONTEND_TAG=$(echo "${{ steps.frontend-meta.outputs.tags }}" | head -n1)
+        echo "backend-image=${BACKEND_TAG}" >> $GITHUB_OUTPUT
+        echo "frontend-image=${FRONTEND_TAG}" >> $GITHUB_OUTPUT
 
   deploy-staging:
     needs: build
