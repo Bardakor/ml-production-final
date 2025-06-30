@@ -77,7 +77,8 @@ test-results/
 
 # Data (ignore large data files but allow .dvc files)
 *.parquet
-*.json
+# Ignore data JSON files but allow configuration JSON files
+/data/**/*.json
 !**/structure.json
 
 # Models (handled by MLflow)
